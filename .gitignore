@@ -1,0 +1,11 @@
+# Binary
+first-server.exe
+*.exe
+
+# IDE
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
