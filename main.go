@@ -22,6 +22,8 @@ func main() {
 	}
 }
 
+// I didn't do anything. It's just a comment for Git.
+
 // homeHandler handles requests to root path
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Welcome to my first Go web server!")

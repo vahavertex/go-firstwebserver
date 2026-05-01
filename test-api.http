@@ -1,0 +1,14 @@
+### Test home endpoint
+GET http://localhost:8080/
+
+### Test hello endpoint
+GET http://localhost:8080/hello?name=Alice
+
+### Test health endpoint
+GET http://localhost:8080/health
+
+### Test advanced info endpoint
+GET http://localhost:8080/api/info
+
+### Test time endpoint
+GET http://localhost:8080/api/time
