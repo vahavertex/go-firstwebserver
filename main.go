@@ -32,7 +32,7 @@ func main() {
 	}
 
 	// Лучшая практика: Используйте пакет "log" вместо fmt.Println для логов сервера.
-	log.Println("Starting server on :8080...")
+	log.Println("Starting server. Open in browser: http://localhost:8080")
 
 	// Ошибка: Использование panic(err) завершает программу некорректно.
 	// http.ErrServerClosed — это нормальное поведение при остановке, его не нужно считать ошибкой.
