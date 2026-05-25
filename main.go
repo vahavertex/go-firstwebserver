@@ -1,60 +1,42 @@
 package main
 
 import (
-	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
 )
 
-type Response struct {
-	Message string `json:"message"`
-	Time    string `json:"time"`
+func handler(w http.ResponseWriter, r *http.Request) {
+	// Ошибка/Устаревание: r.URL.Path в старых версиях Go требовал проверки,
+	// но в новом маршрутизаторе (Go 1.22+) точные совпадения работают строже.
+	fmt.Fprintf(w, "Hello, you've requested: %s\n", r.URL.Path)
 }
 
 func main() {
+	// Лучшая практика: Всегда создавайте явный и изолированный маршрутизатор (mux),
+	// вместо использования глобального http.HandleFunc. Это защищает от скрытых багов.
 	mux := http.NewServeMux()
 
-	// Register routes
-	mux.HandleFunc("/api/info", infoHandler)
-	mux.HandleFunc("/api/time", timeHandler)
+	// В Go 1.22+ для точного совпадения корня (и только корня) используется синтаксис "GET /{$}"
+	// Если оставить просто "/", он будет срабатывать на любые пути (например, /abc/def).
+	mux.HandleFunc("GET /{$}", handler)
 
-	// Custom server configuration
+	// Лучшая практика: Всегда создавайте http.Server вручную и задавайте таймауты.
+	// Дефолтный http.ListenAndServe без таймаутов уязвим к зависанию соединений (Slowloris атаки).
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
+		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Println("Starting server on :8080")
-	log.Println("Available endpoints:")
-	log.Println("  GET /api/info - Server information")
-	log.Println("  GET /api/time  - Current server time")
+	// Лучшая практика: Используйте пакет "log" вместо fmt.Println для логов сервера.
+	log.Println("Starting server on :8080...")
 
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	// Ошибка: Использование panic(err) завершает программу некорректно.
+	// http.ErrServerClosed — это нормальное поведение при остановке, его не нужно считать ошибкой.
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server failed: %s", err)
 	}
-}
-
-func infoHandler(w http.ResponseWriter, r *http.Request) {
-	response := Response{
-		Message: "This is my first Go web server!",
-		Time:    time.Now().Format(time.RFC3339),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	json.NewEncoder(w).Encode(response)
-}
-
-func timeHandler(w http.ResponseWriter, r *http.Request) {
-	response := map[string]string{
-		"current_time": time.Now().Format("15:04:05"),
-		"date":         time.Now().Format("2006-01-02"),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
 }
