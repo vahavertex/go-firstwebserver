@@ -1,42 +1,101 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
+type PageData struct {
+	Path string
+}
+
+// Config хранит настройки нашего сервера
+type Config struct {
+	Port string
+}
+
+// LoadConfig собирает настройки из флагов и переменных окружения
+func LoadConfig() Config {
+	// 1. Проверяем, есть ли переменная окружения PORT (например, в Docker)
+	envPort := os.Getenv("PORT")
+	if envPort == "" {
+		envPort = "8080" // Дефолтное значение
+	}
+
+	// 2. Добавляем флаг командной строки "-port"
+	// Если флаг не передан в консоли, подставится значение из envPort
+	portPtr := flag.String("port", envPort, "Port to listen on")
+
+	// Обязательно вызываем Parse, чтобы Go прочитал аргументы из консоли
+	flag.Parse()
+
+	return Config{
+		Port: *portPtr,
+	}
+}
+
 func handler(w http.ResponseWriter, r *http.Request) {
-	// Ошибка/Устаревание: r.URL.Path в старых версиях Go требовал проверки,
-	// но в новом маршрутизаторе (Go 1.22+) точные совпадения работают строже.
-	fmt.Fprintf(w, "Hello, you've requested: %s\n", r.URL.Path)
+	tmpl, err := template.ParseFiles("templates/index.html")
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("Template parsing error: %v", err)
+		return
+	}
+
+	data := PageData{Path: r.URL.Path}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if err := tmpl.Execute(w, data); err != nil {
+		log.Printf("Template execution error: %v", err)
+	}
 }
 
 func main() {
-	// Лучшая практика: Всегда создавайте явный и изолированный маршрутизатор (mux),
-	// вместо использования глобального http.HandleFunc. Это защищает от скрытых багов.
-	mux := http.NewServeMux()
+	// Загружаем конфигурацию при старте приложения
+	cfg := LoadConfig()
 
-	// В Go 1.22+ для точного совпадения корня (и только корня) используется синтаксис "GET /{$}"
-	// Если оставить просто "/", он будет срабатывать на любые пути (например, /abc/def).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", handler)
 
-	// Лучшая практика: Всегда создавайте http.Server вручную и задавайте таймауты.
-	// Дефолтный http.ListenAndServe без таймаутов уязвим к зависанию соединений (Slowloris атаки).
+	// Форматируем адрес строки (добавляем двоеточие перед портом, если его нет)
+	serverAddr := fmt.Sprintf(":%s", cfg.Port)
+
 	server := &http.Server{
-		Addr:         ":8080",
+		Addr:         serverAddr,
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
-	// Лучшая практика: Используйте пакет "log" вместо fmt.Println для логов сервера.
-	log.Println("Starting server. Open in browser: http://localhost:8080")
+	go func() {
+		// Динамически выводим порт в лог
+		log.Printf("Starting server. Open in browser: http://localhost:%s\n", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server failed: %s", err)
+		}
+	}()
 
-	// Ошибка: Использование panic(err) завершает программу некорректно.
-	// http.ErrServerClosed — это нормальное поведение при остановке, его не нужно считать ошибкой.
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server failed: %s", err)
+	<-ctx.Done()
+	log.Println("\nShutdown signal received. Closing server gracefully...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+
+	log.Printf("Server stopped. Port %s is free.\n", cfg.Port)
 }
