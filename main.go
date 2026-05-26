@@ -1,45 +1,95 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"fmt"
+	"html/template"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
+type PageData struct {
+	Path string
+}
+
+type Config struct {
+	Port string
+}
+
+// Кэшируем шаблон при старте приложения.
+// template.Must вызовет панику, если в HTML файле будет синтаксическая ошибка.
+var tmpl = template.Must(template.ParseFiles("templates/index.html"))
+
+func LoadConfig() Config {
+	envPort := os.Getenv("PORT")
+	if envPort == "" {
+		envPort = "8080"
+	}
+
+	portPtr := flag.String("port", envPort, "Port to listen on")
+	flag.Parse()
+
+	return Config{
+		Port: *portPtr,
+	}
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	data := PageData{Path: r.URL.Path}
+
+	// Заголовок Content-Type лучше ставить ДО отправки любого статуса или данных
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Просто исполняем уже готовый в памяти шаблон
+	if err := tmpl.Execute(w, data); err != nil {
+		log.Printf("Template execution error: %v", err)
+		// Если шаблон упал в процессе передачи, заголовок ответа изменить уже нельзя,
+		// но мы хотя бы логируем это событие.
+	}
+}
+
 func main() {
-	// Define handler functions
-	http.HandleFunc("/", homeHandler)
-	http.HandleFunc("/hello", helloHandler)
-	http.HandleFunc("/health", healthHandler)
+	cfg := LoadConfig()
 
-	// Start server
-	port := ":8080"
-	fmt.Printf("Server is running on http://localhost%s\n", port)
-	fmt.Println("Press Ctrl+C to stop the server")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	err := http.ListenAndServe(port, nil)
-	if err != nil {
-		fmt.Printf("Server failed to start: %v\n", err)
+	mux := http.NewServeMux()
+	// GET /{$} строго соответствует только корню "/"
+	// Если нужно обрабатывать вообще все пути, измените на "GET /"
+	mux.HandleFunc("GET /{$}", handler)
+
+	serverAddr := fmt.Sprintf(":%s", cfg.Port)
+
+	server := &http.Server{
+		Addr:         serverAddr,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
-}
 
-// I didn't do anything. It's just a comment for Git.
+	go func() {
+		log.Printf("Starting server. Open in browser: http://localhost:%s\n", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server failed: %s", err)
+		}
+	}()
 
-// homeHandler handles requests to root path
-func homeHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Welcome to my first Go web server!")
-}
+	<-ctx.Done()
+	log.Println("\nShutdown signal received. Closing server gracefully...")
 
-// helloHandler returns a personalized greeting
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		name = "Guest"
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
-	fmt.Fprintf(w, "Hello, %s!", name)
-}
 
-// healthHandler returns server health status
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status": "ok", "message": "Server is running properly"}`)
+	log.Printf("Server stopped. Port %s is free.\n", cfg.Port)
 }
