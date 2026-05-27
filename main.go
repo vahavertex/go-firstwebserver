@@ -15,44 +15,38 @@ import (
 	"time"
 )
 
-type PageData struct {
-	Path string
-}
-
 type Config struct {
 	Port string
 }
 
-// Выносим шаблон на уровень пакета (глобальная переменная для кэша)
-var tmpl *template.Template
-
 func LoadConfig() (Config, error) {
-	envPort := os.Getenv("PORT")
-	if envPort == "" {
-		envPort = "8080"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
 
-	portPtr := flag.String("port", envPort, "Port to listen on (1-65355)")
+	flag.StringVar(&port, "port", port, "Port to listen on (1-65535)")
 	flag.Parse()
 
-	// Логическая проверка: валиден ли порт вообще?
-	p, err := strconv.Atoi(*portPtr)
+	// Валидация из Version A
+	p, err := strconv.Atoi(port)
 	if err != nil || p < 1 || p > 65535 {
-		return Config{}, fmt.Errorf("invalid port number: %s", *portPtr)
+		return Config{}, fmt.Errorf("invalid port: %s", port)
 	}
 
-	return Config{Port: *portPtr}, nil
+	return Config{Port: port}, nil
 }
 
+// template.Must из Version B (идиоматично)
+var tmpl = template.Must(template.ParseFiles("templates/index.html"))
+
 func handler(w http.ResponseWriter, r *http.Request) {
-	data := PageData{Path: r.URL.Path}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// ВЫСОКАЯ ПРОИЗВОДИТЕЛЬНОСТЬ: Теперь мы берем уже готовый шаблон из памяти.
-	// Никакого обращения к диску! Операция стала в тысячи раз быстрее.
+	data := struct{ Path string }{Path: r.URL.Path}
 	if err := tmpl.Execute(w, data); err != nil {
-		log.Printf("Template execution error: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("Template error: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError) // Из Version A
 	}
 }
 
@@ -60,13 +54,6 @@ func main() {
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("Config error: %v", err)
-	}
-
-	// Инициализируем (кэшируем) шаблон строго ОДИН раз при старте.
-	// Если файла нет — программа упадет сразу при запуске, а не во время работы.
-	tmpl, err = template.ParseFiles("templates/index.html")
-	if err != nil {
-		log.Fatalf("Critical: failed to parse template: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -82,30 +69,28 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	// Канал для отслеживания критических ошибок самого сервера во время старта
+	// Обработка ошибок запуска из Version A
 	serverErrors := make(chan error, 1)
-
 	go func() {
-		log.Printf("Starting server. Open in browser: http://localhost:%s\n", cfg.Port)
+		log.Printf("Server starting on http://localhost:%s", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErrors <- err
 		}
 	}()
 
-	// ИСПРАВЛЕНИЕ ЛОГИКИ: Теперь main ждет ЛИБО сигнал от ОС, ЛИБО ошибку старта сервера
 	select {
 	case err := <-serverErrors:
-		log.Fatalf("Critical: Server failed to start: %v", err)
+		log.Fatalf("Server failed: %v", err)
 	case <-ctx.Done():
-		log.Println("\nShutdown signal received. Closing server gracefully...")
+		log.Println("Shutting down gracefully...")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Printf("Shutdown error: %v", err)
 	}
 
-	log.Printf("Server stopped. Port %s is free.\n", cfg.Port)
+	log.Println("Server stopped")
 }
